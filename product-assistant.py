@@ -5,9 +5,10 @@ import json
 import csv
 import os
 import random
+import re
 from PIL import Image
 from datetime import datetime
-from typing import Dict
+from typing import Dict, List
 from dotenv import load_dotenv
 from openai import OpenAI
 from selenium import webdriver
@@ -54,7 +55,13 @@ STORES_URLS=["https://www.aquario.pt/pt/product/apple-smartphone-apple-iphone-15
              "https://www.kuantokusta.pt/p/10379596/apple-iphone-15-pro-max-67-256gb-blue-titanium",
              "https://www.kuantokusta.pt/p/10379598/apple-iphone-15-pro-max-67-256gb-natural-titanium",
              "https://www.kuantokusta.pt/p/10379599/apple-iphone-15-pro-max-67-256gb-black-titanium",
-             "https://www.kuantokusta.pt/p/10379597/apple-iphone-15-pro-max-67-256gb-white-titanium"
+             "https://www.kuantokusta.pt/p/10379597/apple-iphone-15-pro-max-67-256gb-white-titanium",
+             "https://chipman.pt/smartphones-iphone/telem%C3%B3vel-apple-iphone-15-pro-max-67-256gb-tit%C3%A2nio-azul-mu7a3qla",
+             "https://www.istore.pt/apple-iphone-15-pro-max-256gb-ti-branco",
+             "https://www.istore.pt/apple-iphone-15-pro-max-256gb-ti-natural",
+             "https://www.istore.pt/apple-iphone-15-pro-max-256gb-ti-preto",
+             "https://www.istore.pt/apple-iphone-15-pro-max-256gb-ti-azul"
+
 
     ]
 
@@ -62,7 +69,9 @@ STORES_URLS=["https://www.aquario.pt/pt/product/apple-smartphone-apple-iphone-15
 
 # TEST_STORES=["https://www.radiopopular.pt/produto/tablet-samsung-tab-a9-128gb-grey"]
 
-SYSTEM_MSG="You are product comparison expert and you will analyse the price of a product. You will be given an image of a website, and output: 1) the name of the item, 2) the price with the appropriate currency, 3) availability information - if there's explicit mention of availability, if not write N/A -, 4) any relevant notes such as ongoing deals and 5) the name of the store. You will return this information in JSON format and add any relevant fields for any other defining features such as color. Think step by step to solve this problem."
+SYSTEM_MSG="""You are product comparison expert and you will analyse the price of a product. 
+You will be given an image of a website, and output: 1) the name of the item, 2) the current price with the appropriate currency, 4) any relevant notes such as ongoing deals and 5) the name of the store. 
+You will return this information in JSON format and add any relevant fields for any other defining features such as color. Think step by step to solve this problem."""
 
 def compress_image(base64_image):
     image_data = base64.b64decode(base64_image)
@@ -134,12 +143,8 @@ def get_ai_image_analysis(base64_image):
                     "description": "The cost of the product",
                     "type": "string"
                     },
-                    "availability": {
-                    "description": "Information about stock",
-                    "type": "string"
-                    },
                     "notes": {
-                    "description": "Any other relevant information such as deals and promotions",
+                    "description": "Any other relevant information such as stock, deals and promotions",
                     "type": "string"
                     },
                      "store": {
@@ -184,7 +189,9 @@ def save_info_to_csv(price_results:Dict, csv_file="output.csv"):
             print(f"File '{csv_file}' created and data written.")
 
 sys_msg1=f"""You are product comparison expert and you will analyse the cheapeast 
-option out of a collection of data about different stores and options selling {PRODUCT_TO_TRACK}"""
+option out of a collection of data about different stores and options selling {PRODUCT_TO_TRACK}.
+Remember you can do maths if needed and make sure to compare all prices before responding. Think step by step.
+"""
 
 def analyse_batch_results(json_results):
     completion = client.chat.completions.create(
@@ -198,31 +205,92 @@ def analyse_batch_results(json_results):
                 "text": f"""Today is What is {datetime.now().strftime("%Y-%m-%d %H:%M")} with formatting %Y-%m-%d %H:%M. 
                 What is the bests {PRODUCT_TO_TRACK} to purchase? Do an analysis and think step by step to answer the questions.
                 ```{json_results}```
-                Format your answer as an email with <subject> and <body> XML tags both in plain text. Make sure the subject contains the cheapest price available found.
+                Format your answer in XML tags:
+                - <thinking> tag Do your thinking inside <thinking>. The customer will not see this.
+                - <body> Write plain text in body of the email to the client. Make sure to include relevant details of the deal and product chosen, including color, price store, url etc as well as a summary analysis on why it's best than other options. If there are multiple options with the better price, include all. Briefly compare the best deal with the second best deal.
+                - <subject> Write an email subject and make sure it contains the cheapest price you found.
                 """,
                 },
              ]
             }
         ],)
-    print(completion.choices[0].message)
+    return completion.choices[0].message.content
 
-def email():
-    email="product.track3r@gmail.com"
-    passwd="Tracker123"
-    pass
+
+def format_table_from_list(data: List[Dict]) -> str:
+
+    if not data:
+        return "No data to display."
+
+    # Dynamically generate headers from keys of the first dictionary
+    headers = data[0].keys()
+    header_row = " | ".join(f"{header.capitalize():<12}" for header in headers)
+    separator = "-" * len(header_row)
+
+    # Generate rows dynamically
+    rows = [
+        " | ".join(f"{str(item[key]):<12}" for key in headers)
+        for item in data
+    ]
+
+    # Combine header, separator, and rows into the final string
+    formatted_string = f"{header_row}\n{separator}\n" + "\n".join(rows)
+    return formatted_string
+
+def send_email(subject, body):
+
+    # Gmail login credentials
+    email = os.environ.get("SENDER_EMAIL")
+    password = os.environ.get("SENDER_PASS")
+    receiver_email = os.environ.get("RECEIVER_EMAIL")
+
+
+    # Create the email
+    message = MIMEMultipart()
+    message["From"] = email
+    message["To"] = receiver_email
+    message["Subject"] = subject
+    message.attach(MIMEText(body, "plain"))
+
+    # Connect to Gmail's SMTP server and send the email
+    try:
+        with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
+            server.starttls()  # Secure the connection
+            server.login(email, password)  # Login to your Gmail account
+            server.sendmail(email, receiver_email, message.as_string())
+            print("Email sent successfully!")
+    except Exception as e:
+        print(f"Error: {e}")
 
 def main():
     price_results=[]
     try: 
         for url in STORES_URLS:
             base64_image = get_screenshot_from_url(url)
-            json_output=get_ai_image_analysis(base64_image)
-            dict_result=json.loads(json_output)
-            print(dict_result)
+            json_output = get_ai_image_analysis(base64_image)
+            dict_result = json.loads(json_output)
+            dict_result["url"] = url
             price_results.append(dict_result)
         save_info_to_csv(price_results)
-        json_results=json.dumps(price_results, indent=4)
-        analyse_batch_results(json_results)
+        json_results = json.dumps(price_results, indent=4)
+        xml_email_content = analyse_batch_results(json_results)
+        results_table = format_table_from_list(price_results)
+        
+        # Extract thinking using regex
+        thinking_match = re.search(r"<thinking>(.*?)</thinking>", xml_email_content, re.DOTALL)
+        thinking = subject_match.group(1).strip() if thinking_match else "No thinking found"
+        # TODO: log thinking
+
+        # Extract subject using regex
+        subject_match = re.search(r"<subject>(.*?)</subject>", xml_email_content, re.DOTALL)
+        subject = subject_match.group(1).strip() if subject_match else "No subject found"
+
+        # Extract body using regex
+        body_match = re.search(r"<body>(.*?)</body>", xml_email_content, re.DOTALL)
+        body = body_match.group(1).strip() if body_match else "No body found"
+    
+        print(xml_email_content)
+        send_email(subject, body+results_table)
     finally:
         driver.quit()
 
