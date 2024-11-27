@@ -278,7 +278,7 @@ def main():
         
         # Extract thinking using regex
         thinking_match = re.search(r"<thinking>(.*?)</thinking>", xml_email_content, re.DOTALL)
-        thinking = subject_match.group(1).strip() if thinking_match else "No thinking found"
+        thinking = thinking_match.group(1).strip() if thinking_match else "No thinking found"
         # TODO: log thinking
 
         # Extract subject using regex
